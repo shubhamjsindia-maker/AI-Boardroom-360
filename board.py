@@ -101,7 +101,11 @@ def _validate_response(d,role,round_no,metrics):
     invalid=set(d['supporting_metric_ids'])-set(metrics)
     if invalid: raise ValueError(f'Unrecognized calculated metric references: {sorted(invalid)}')
     if d['confidence'] not in ('Low','Medium','High'):raise ValueError('Invalid confidence')
-    if round_no<3 and d.get('vote') is not None:raise ValueError('Votes allowed only in round 3')
+    # Models can express an early preference even when instructed not to vote.
+    # Ignore premature votes rather than aborting the entire meeting; only
+    # round-three votes are recorded and counted.
+    if round_no < 3:
+        d['vote'] = None
     if round_no==3 and d.get('vote') not in VOTES:raise ValueError('Final vote missing/invalid')
     d['agent_role']=role;d['round_number']=round_no
     if d.get('challenge_to') not in (None,*ROLES.keys()): d['challenge_to']=None

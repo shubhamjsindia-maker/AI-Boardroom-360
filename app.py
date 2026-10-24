@@ -225,7 +225,9 @@ elif page=='AI Boardroom':
                     result=conduct_board(s['results'],mode,model)
                 mid=save_meeting(s['id'],result,mode);st.session_state.meeting_id=mid
                 if result['complete']:st.success(f'Meeting #{mid} completed; 15 director responses including five advisory votes.')
-                else:st.error('Meeting incomplete: '+'; '.join(result['errors']))
+                else:
+                    st.error('Meeting incomplete: '+'; '.join(result['errors']))
+                    st.info('No final votes have been counted. Review the message above before retrying.')
             except Exception as e:st.error(f'Unable to run board: {e}')
         m=get_meeting(st.session_state.meeting_id) if st.session_state.meeting_id else None
         if m and m['scenario_id']==s['id']:
@@ -257,7 +259,12 @@ elif page=='AI Boardroom':
                 b.metric('Reject',counts.get('REJECT',0))
                 c.metric('Defer',counts.get('DEFER',0))
             st.metric('Majority',result.get('majority','INCOMPLETE'))
-            st.success(result.get('recommendation')) if result['complete'] else st.warning(result['recommendation'])
+            # Render the message directly; never pass Streamlit display objects
+            # to st.write(), which exposes internal DeltaGenerator documentation.
+            if result['complete']:
+                st.success(result.get('recommendation', 'Meeting completed.'))
+            else:
+                st.warning(result.get('recommendation', 'Meeting incomplete.'))
             st.caption(result.get('recommendation_rationale',''))
             if result['complete']:
                 st.divider()
