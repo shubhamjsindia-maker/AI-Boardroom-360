@@ -74,7 +74,7 @@ meeting=get_meeting(st.session_state.meeting_id) if st.session_state.meeting_id 
 
 def figure(rows):
     df=pd.DataFrame(rows)
-    return px.line(df,x='year',y=['revenue','ebitda','closing_cash'],markers=True,title='Three-year forecast (₹ lakh)',labels={'value':'₹ lakh','year':'Projection year','variable':'Metric'})
+    return px.line(df.rename(columns=financial_label),x='Forecast Year',y=['Total Revenue','EBITDA','Closing Cash Balance'],markers=True,title='Three-Year Financial Outlook (₹ lakh)',labels={'value':'₹ lakh','Forecast Year':'Projection Year','variable':'Financial Indicator'})
 
 def load_scenario_options(label='Saved scenario'):
     vals=list_scenarios()
@@ -86,18 +86,151 @@ def load_scenario_options(label='Saved scenario'):
         st.session_state.scenario_id=selected;st.session_state.meeting_id=None
     return get_scenario(selected)
 
+
+# Reader-facing terminology is deliberately separate from internal model keys.
+FINANCIAL_LABELS = {
+ 'year':'Forecast Year','revenue':'Total Revenue','base_revenue':'Core Business Revenue',
+ 'incremental_revenue':'Incremental Revenue','ebitda':'EBITDA',
+ 'base_ebitda':'Core Business EBITDA','incremental_ebitda':'Incremental EBITDA',
+ 'depreciation':'Depreciation','existing_interest':'Interest on Existing Debt',
+ 'new_interest':'Interest on New Borrowing','pretax_profit':'Profit Before Tax',
+ 'cash_tax':'Estimated Income Tax','working_capital_change':'Change in Net Working Capital',
+ 'incremental_wc_change':'Incremental Working Capital Requirement',
+ 'operating_cash':'Operating Cash Flow','capex':'Capital Expenditure',
+ 'loan_draw':'New Borrowings Raised','equity_required':'Equity Funding Requirement',
+ 'existing_principal':'Existing Debt Repaid','new_principal':'New Debt Repaid',
+ 'closing_cash':'Closing Cash Balance','closing_debt':'Closing Total Borrowings',
+ 'project_cfads':'Project Cash Flow Available for Debt Service',
+ 'project_debt_service':'Project Debt Servicing Requirement',
+ 'project_dscr':'Project Debt Service Coverage Ratio',
+ 'revenue_growth':'Revenue Growth','ebitda_margin':'EBITDA Margin',
+ 'net_debt':'Net Borrowings','debt_to_ebitda':'Borrowings / EBITDA',
+ 'interest_coverage':'EBITDA / Interest Expense',
+ 'cash_to_debt':'Cash / Total Borrowings',
+ 'receivable_days':'Trade Receivable Days',
+ 'inventory_days':'Inventory Holding Days','payable_days':'Trade Payable Days',
+ 'profit':'Profit After Tax','direct_cost':'Direct Costs',
+ 'operating_expenses':'Operating Expenses',
+ 'interest':'Finance Costs','tax':'Income Tax Expense',
+ 'cash':'Cash and Bank Balances','borrowings':'Total Borrowings',
+ 'receivables':'Trade Receivables','payables':'Trade Payables',
+ 'fixed_assets':'Property, Plant and Equipment',
+ 'other_assets':'Other Assets','other_liabilities':'Other Liabilities',
+ 'equity':'Shareholders’ Equity','scenario':'Investment Scenario',
+ 'created':'Created','parent_id':'Parent Scenario',
+}
+
+def financial_label(key):
+    key = str(key)
+    parts = key.split('.')
+    if len(parts)==3 and parts[1].startswith('Y') and parts[1][1:].isdigit():
+        context={'proposal':'Investment Case','baseline':'Business as Usual','delta':'Incremental Impact'}.get(parts[0],parts[0].replace('_',' ').title())
+        return f'{context} · Year {parts[1][1:]} · {FINANCIAL_LABELS.get(parts[2],parts[2].replace("_"," ").title())}'
+    return FINANCIAL_LABELS.get(key, key.replace('_',' ').strip().title())
+
+def show_financial_table(rows, note=''):
+    table=pd.DataFrame(rows).rename(columns=financial_label)
+    st.dataframe(table.round(2),hide_index=True,use_container_width=True)
+    if note:st.caption(note)
+
+def amount(v):
+    # All model amounts are INR lakh. Display crore for larger enterprises.
+    v=float(v)
+    if abs(v)>=10000:
+        return f'₹{v/100:,.2f} Cr'
+    return f'₹{v:,.2f} L'
+
+def ratio_text(num,den,suffix='x'):
+    return 'N/A' if not den else f'{num/den:,.2f}{suffix}'
+
+def overview_ratios(i):
+    ebitda=i.revenue*i.baseline_ebitda_margin
+    finance_cost=i.debt*i.interest_existing
+    return [
+        ('EBITDA Margin', f'{i.baseline_ebitda_margin*100:.1f}%', 'EBITDA as a percentage of current annual revenue'),
+        ('Net Borrowings',amount(i.debt-i.cash),'Total borrowings less cash and bank balances'),
+        ('Borrowings / EBITDA',ratio_text(i.debt,ebitda),'Current borrowings divided by annual EBITDA'),
+        ('EBITDA / Interest Expense',ratio_text(ebitda,finance_cost),'EBITDA divided by estimated interest on existing borrowings'),
+        ('Cash / Borrowings',ratio_text(i.cash,i.debt),'Cash and bank balances as a multiple of borrowings'),
+        ('Receivable Days',f'{i.receivable_days:.0f} days','Average collection period'),
+        ('Inventory Days',f'{i.inventory_days:.0f} days','Estimated inventory holding period'),
+        ('Payable Days',f'{i.payable_days:.0f} days','Average supplier payment period'),
+    ]
+
+def historical_ratios(history):
+    if history is None or history.empty:return None
+    df=history.sort_values('year').copy()
+    if 'revenue' not in df.columns or 'ebitda' not in df.columns:return None
+    df['ebitda_margin']=df['ebitda'].div(df['revenue'].replace(0,float('nan')))*100
+    df['revenue_growth']=df['revenue'].pct_change()*100
+    return df
+
 if page=='Overview':
-    st.title('Executive Overview')
-    st.caption('Business performance and decision scenarios')
-    i=Inputs(**st.session_state.inputs);c=compare(i)
-    a,b,c1,d=st.columns(4)
-    a.metric('Annual revenue',f'₹{i.revenue:,.0f}L');b.metric('EBITDA',f'₹{i.revenue*i.baseline_ebitda_margin:,.0f}L')
-    c1.metric('Opening cash',f'₹{i.cash:,.0f}L');d.metric('Existing borrowing',f'₹{i.debt:,.0f}L')
-    st.plotly_chart(figure(c['proposal']),use_container_width=True)
-    st.subheader('Recent scenarios')
-    r=list_scenarios()
-    if r:st.dataframe(pd.DataFrame(r,columns=['ID','Company','Scenario','Created (UTC)','Parent scenario']),hide_index=True,use_container_width=True)
-    else:st.info('Use Data Studio to load a sample, then create a scenario in Digital Twin.')
+    st.title('Company Financial Overview')
+    st.caption(f'Equity research-style financial snapshot | {st.session_state.company} | All model values in INR lakh unless otherwise stated')
+    i=Inputs(**st.session_state.inputs)
+    annual_ebitda=i.revenue*i.baseline_ebitda_margin
+    kpi=st.columns(4)
+    for col,label,value,help_text in zip(kpi,
+        ['Annual Revenue','Annual EBITDA','Cash & Bank Balances','Total Borrowings'],
+        [amount(i.revenue),amount(annual_ebitda),amount(i.cash),amount(i.debt)],
+        ['Most recent imported revenue or demo baseline','Most recent imported EBITDA or demo estimate',
+         'Cash at the latest reporting date','Interest-bearing borrowing at the latest reporting date']):
+        col.metric(label,value,help=help_text)
+    st.subheader('Key Financial Ratios')
+    ratio_rows=overview_ratios(i)
+    for start_row in (0,4):
+        cols=st.columns(4)
+        for col,(label,value,definition) in zip(cols,ratio_rows[start_row:start_row+4]):
+            col.metric(label,value,help=definition)
+    st.caption('Ratio definitions: borrowings-to-EBITDA and interest coverage use annual EBITDA and existing borrowing assumptions. These are indicative analytical ratios, not audited covenant calculations.')
+    history=historical_ratios(st.session_state.get('historical_financials'))
+    if history is not None:
+        st.subheader('Historical Operating Performance')
+        show_cols=[k for k in ['year','revenue','ebitda','ebitda_margin','revenue_growth','interest','profit'] if k in history.columns]
+        display=history[show_cols].rename(columns=financial_label).copy()
+        st.dataframe(display.round(2),hide_index=True,use_container_width=True)
+        chart=history[['year','revenue','ebitda']].melt(id_vars='year',var_name='metric',value_name='value')
+        chart['metric']=chart['metric'].map(financial_label)
+        st.plotly_chart(px.bar(chart,x='year',y='value',color='metric',barmode='group',
+            title='Reported Operating Trend (₹ lakh)',labels={'year':'Financial Year','value':'₹ lakh','metric':'Financial Indicator'}),use_container_width=True)
+        st.caption('Historical numbers are taken directly from the uploaded workbook, which may contain illustrative figures. Validate data provenance before professional use.')
+        latest=history.iloc[-1]
+        if 'profit' in history.columns and 'revenue' in history.columns:
+            profitability=st.columns(3)
+            profitability[0].metric('Latest Profit After Tax',amount(latest['profit']))
+            profitability[1].metric('Net Profit Margin',ratio_text(latest['profit']*100,latest['revenue'],'%'))
+            if 'depreciation' in history.columns:
+                profitability[2].metric('Latest Depreciation',amount(latest['depreciation']))
+    else:
+        st.info('Historical trend not currently available. Load an Excel workbook through Data Studio to display historical revenue, EBITDA, profit and growth. Historical data is kept only for your current browser session.')
+    balance=st.session_state.get('balance_sheet_data')
+    if balance is not None and not balance.empty:
+        st.subheader('Latest Balance Sheet Snapshot')
+        bs=balance.sort_values('year').iloc[-1]
+        left=st.columns(4)
+        for col,key in zip(left,['receivables','inventory','payables','equity']):
+            if key in bs:col.metric(financial_label(key),amount(bs[key]))
+        bs_rows=[{'Financial Position':financial_label(key),'Amount':amount(bs[key])} for key in ['cash','receivables','inventory','fixed_assets','other_assets','equity','borrowings','payables','other_liabilities'] if key in bs]
+        with st.expander('Detailed balance sheet classification'):
+            st.dataframe(pd.DataFrame(bs_rows),hide_index=True,use_container_width=True)
+    st.subheader('Forward-Looking Investment Outlook')
+    c=compare(i)
+    forecast=c['proposal']
+    yr=forecast[0]
+    cards=st.columns(4)
+    cards[0].metric('Year 1 Revenue',amount(yr['revenue']))
+    cards[1].metric('Year 1 EBITDA',amount(yr['ebitda']))
+    cards[2].metric('Year 1 Closing Cash',amount(yr['closing_cash']))
+    cards[3].metric('Year 1 Project DSCR','N/A' if yr['project_dscr'] is None else f'{yr["project_dscr"]:.2f}x')
+    st.plotly_chart(figure(forecast),use_container_width=True)
+    with st.expander('Three-year financial forecast — detailed results'):
+        show_financial_table(forecast)
+    st.caption('Forecasts are model-generated scenarios, not public company earnings guidance. The project DSCR measures incremental project debt service only.')
+    st.subheader('Recent Investment Scenarios')
+    saved=list_scenarios()
+    if saved:st.dataframe(pd.DataFrame(saved,columns=['ID','Company','Investment Scenario','Created (UTC)','Parent Scenario']),hide_index=True,use_container_width=True)
+    else:st.info('Create a financial scenario in Digital Twin to begin scenario analysis.')
 
 elif page=='Data Studio':
     st.title('Business Data Studio')
@@ -107,7 +240,7 @@ elif page=='Data Studio':
         st.write('Synthetic manufacturing company with ₹1,000 lakh historical revenue, ₹150 lakh EBITDA and ₹80 lakh cash.')
         st.download_button('Download complete sample workbook',template_bytes(),'Nova_Manufacturing_Template.xlsx',mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
         if st.button('Load demo company',type='primary'):
-            st.session_state.company=NAME;st.session_state.inputs=asdict(sample_inputs());st.session_state.scenario_id=None;st.session_state.meeting_id=None
+            st.session_state.company=NAME;st.session_state.inputs=asdict(sample_inputs());st.session_state.scenario_id=None;st.session_state.meeting_id=None;st.session_state.historical_financials=None;st.session_state.balance_sheet_data=None
             st.success('Sample company loaded.')
     with tab2:
         st.write('Only the supplied `.xlsx` template is accepted. Amounts must be in **INR lakh**.')
@@ -119,10 +252,13 @@ elif page=='Data Studio':
             try:
                 name,inputs,warnings=parse_workbook(upload.getvalue())
                 st.success(f'Workbook validated for {name}')
-                st.dataframe(pd.DataFrame([asdict(inputs)]),hide_index=True)
+                st.dataframe(pd.DataFrame([asdict(inputs)]).rename(columns=financial_label),hide_index=True,use_container_width=True)
                 for w in warnings:st.warning(w)
                 if st.button('Use validated upload',type='primary'):
                     st.session_state.company=name;st.session_state.inputs=asdict(inputs);st.session_state.scenario_id=None;st.session_state.meeting_id=None
+                    st.session_state.historical_financials=pd.read_excel(upload,sheet_name='Historical_Financials',engine='openpyxl')
+                    upload.seek(0)
+                    st.session_state.balance_sheet_data=pd.read_excel(upload,sheet_name='Balance_Sheet',engine='openpyxl')
                     st.success('Imported company is active.')
             except Exception as e:st.error(f'Upload rejected: {e}')
 
@@ -162,10 +298,22 @@ elif page=='Digital Twin':
     if st.session_state.scenario_id:
         s=get_scenario(st.session_state.scenario_id)
         st.subheader(f'Calculated results · Scenario #{s["id"]}')
-        st.dataframe(pd.DataFrame(s['results']['proposal']).round(2),hide_index=True,use_container_width=True)
+        show_financial_table(s['results']['proposal'])
         st.plotly_chart(figure(s['results']['proposal']),use_container_width=True)
-        st.subheader('Incremental impact vs business as usual')
-        st.dataframe(pd.DataFrame(s['results']['delta']).round(2),hide_index=True,use_container_width=True)
+        st.subheader('Projected Investment Ratios')
+        ratio_rows=[]
+        for projected in s['results']['proposal']:
+            ratio_rows.append({
+                'Forecast Year':int(projected['year']),
+                'EBITDA Margin (%)':round(100*projected['ebitda']/projected['revenue'],2) if projected['revenue'] else None,
+                'Borrowings / EBITDA (x)':round(projected['closing_debt']/projected['ebitda'],2) if projected['ebitda'] else None,
+                'Closing Cash / Borrowings (x)':round(projected['closing_cash']/projected['closing_debt'],2) if projected['closing_debt'] else None,
+                'Project DSCR (x)':round(projected['project_dscr'],2) if projected.get('project_dscr') is not None else None,
+            })
+        st.dataframe(pd.DataFrame(ratio_rows),hide_index=True,use_container_width=True)
+        st.caption('Project DSCR is based on the new investment’s projected cash flow and debt servicing; it excludes existing debt servicing.')
+        st.subheader('Incremental Financial Impact versus Business as Usual')
+        show_financial_table(s['results']['delta'])
         st.caption('The model uses simplified tax assumptions. Project DSCR excludes legacy debt service and is not a complete corporate covenant model.')
 
 elif page=='AI Boardroom':
@@ -230,7 +378,7 @@ elif page=='AI Boardroom':
                         if rnd==3:
                             st.caption('Confidence: ' + str(r.get('confidence', 'Not rated')))
                         with st.expander('Supporting financial references'):
-                            st.caption(', '.join(r.get('supporting_metric_ids',[])) or 'No numerical reference supplied')
+                            st.caption('; '.join(financial_label(m) for m in r.get('supporting_metric_ids',[])) or 'No numerical reference supplied')
                         if r.get('challenge_question') and rnd==2:
                             st.info(f"Question to {r.get('challenge_to') or 'the board'}: {r['challenge_question']}")
             st.subheader('Advisory voting — five directors')
@@ -275,7 +423,7 @@ elif page=='AI Boardroom':
                         st.write(f"To {exchange['role']}: {exchange['question']}")
                     with st.chat_message('assistant'):
                         st.write(exchange['answer'])
-                        st.caption('Supporting metrics: '+(', '.join(exchange['supporting_metric_ids']) or 'None cited'))
+                        st.caption('Supporting financial references: '+('; '.join(financial_label(m) for m in exchange.get('supporting_metric_ids',[])) or 'None cited'))
 
 elif page=='Shock Engine':
     st.title('Scenario Shock Engine')
@@ -286,13 +434,13 @@ elif page=='Shock Engine':
         try:
             updated=shocked(Inputs(**s['inputs']),kind,mag)
             modified=compare(updated)
-            st.subheader('Year-one comparison')
+            st.subheader('Year 1 Financial Impact — Before and After Shock')
             a,b=st.columns(2)
-            a.metric('Original EBITDA',f"₹{s['results']['proposal'][0]['ebitda']:.2f}L")
-            b.metric('Shocked EBITDA',f"₹{modified['proposal'][0]['ebitda']:.2f}L",delta=f"{modified['proposal'][0]['ebitda']-s['results']['proposal'][0]['ebitda']:.2f}L")
+            a.metric('Original EBITDA',amount(s['results']['proposal'][0]['ebitda']))
+            b.metric('Shocked EBITDA',amount(modified['proposal'][0]['ebitda']),delta=amount(modified['proposal'][0]['ebitda']-s['results']['proposal'][0]['ebitda']))
             x,y=st.columns(2)
-            x.metric('Original cash',f"₹{s['results']['proposal'][0]['closing_cash']:.2f}L")
-            y.metric('Shocked cash',f"₹{modified['proposal'][0]['closing_cash']:.2f}L",delta=f"{modified['proposal'][0]['closing_cash']-s['results']['proposal'][0]['closing_cash']:.2f}L")
+            x.metric('Original cash',amount(s['results']['proposal'][0]['closing_cash']))
+            y.metric('Closing Cash After Shock',amount(modified['proposal'][0]['closing_cash']),delta=amount(modified['proposal'][0]['closing_cash']-s['results']['proposal'][0]['closing_cash']))
             if st.button('Save Shock Scenario & Reconvene Later',type='primary'):
                 new_id=save_scenario(s['company'],f'{s["title"]} · {kind} {mag}%',asdict(updated),modified,parent_id=s['id'])
                 st.session_state.scenario_id=new_id;st.session_state.meeting_id=None
@@ -308,7 +456,7 @@ elif page=='Reports':
     mid=st.selectbox('Board meeting',ids,index=default,format_func=lambda v:f'Meeting #{v}')
     m=get_meeting(mid);s=get_scenario(m['scenario_id']);r=m['meeting']
     st.subheader(s['title']);st.write(r.get('recommendation','Incomplete meeting'))
-    st.dataframe(pd.DataFrame(s['results']['proposal']).round(2),use_container_width=True,hide_index=True)
+    show_financial_table(s['results']['proposal'])
     st.subheader('Directors’ advisory votes')
     vote_rows=[{'Director':name,'Vote':vote} for name,vote in r.get('votes',{}).items()]
     if vote_rows:st.dataframe(pd.DataFrame(vote_rows),hide_index=True,use_container_width=True)
