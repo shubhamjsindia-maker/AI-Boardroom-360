@@ -212,14 +212,29 @@ elif page=='AI Boardroom':
                         st.markdown(f'**{r["agent_role"]}** '+(f'· **{r["vote"]}**' if r.get('vote') else ''))
                         st.write(r['position'])
                         if r.get('key_arguments'):
-                            st.write('**Reasoning:** ' + '; '.join(r['key_arguments']))
+                            st.markdown('**Why this director takes this view**')
+                            for argument in r['key_arguments']:
+                                st.markdown('- ' + str(argument))
+                        if r.get('risks'):
+                            st.markdown('**Key concerns**')
+                            for concern in r['risks']:
+                                st.markdown('- ' + str(concern))
+                        if r.get('missing_evidence'):
+                            with st.expander('Evidence the director would request'):
+                                for item in r['missing_evidence']:
+                                    st.markdown('- ' + str(item))
                         if r.get('conditions') and rnd==3:
-                            st.write('**Conditions:** ' + '; '.join(r['conditions']))
-                        with st.expander('Technical metric references'):
-                            st.caption(', '.join(r.get('supporting_metric_ids',[])))
-                        if r.get('challenge_question'):st.info(f"Challenge to {r.get('challenge_to')}: {r['challenge_question']}")
+                            st.markdown('**Conditions before proceeding or changing the vote**')
+                            for condition in r['conditions']:
+                                st.markdown('- ' + str(condition))
+                        if rnd==3:
+                            st.caption('Confidence: ' + str(r.get('confidence', 'Not rated')))
+                        with st.expander('Supporting financial references'):
+                            st.caption(', '.join(r.get('supporting_metric_ids',[])) or 'No numerical reference supplied')
+                        if r.get('challenge_question') and rnd==2:
+                            st.info(f"Question to {r.get('challenge_to') or 'the board'}: {r['challenge_question']}")
             st.subheader('Advisory voting — five directors')
-            st.caption('Each vote is an advisory opinion based on this scenario. Voting is completed in Round 3; it is not interactive shareholder voting.')
+            st.caption('Each advisory vote reflects the director’s own reasoning on the supplied hypothetical financial scenario. Read the Round 3 reasons and conditions above before interpreting the majority.')
             votes=result.get('votes',{})
             for director in ROLES:
                 vote=votes.get(director,'PENDING')
