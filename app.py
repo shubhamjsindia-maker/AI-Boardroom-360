@@ -134,13 +134,13 @@ elif page=='Digital Twin':
         title=st.text_input('Scenario title','₹2 crore manufacturing expansion')
         x,y,z=st.columns(3)
         with x:
-            i.expansion_capex=st.number_input('Investment capex (₹ lakh)',0.0,100000.0,float(i.expansion_capex),step=25.0)
-            i.expansion_sales_year1=st.number_input('Incremental year-1 sales (₹ lakh)',0.0,100000.0,float(i.expansion_sales_year1),step=25.0)
+            i.expansion_capex=st.number_input('Investment capex (₹ lakh)',min_value=0.0,max_value=50000000.0,value=float(i.expansion_capex),step=100.0)
+            i.expansion_sales_year1=st.number_input('Incremental year-1 sales (₹ lakh)',min_value=0.0,max_value=50000000.0,value=float(i.expansion_sales_year1),step=100.0)
             i.expansion_growth=st.slider('Expansion annual growth (%)',-50,100,int(i.expansion_growth*100))/100
-            i.expansion_ebitda_margin=st.slider('Incremental EBITDA margin (%)',0,80,int(i.expansion_ebitda_margin*100))/100
+            i.expansion_ebitda_margin=st.slider('Incremental EBITDA margin (%)',0.0,80.0,round(i.expansion_ebitda_margin*100,1),step=0.5)/100
         with y:
             i.loan_share=st.slider('New debt funding (%)',0,100,int(i.loan_share*100))/100
-            i.interest_new=st.slider('New loan interest (%)',0,30,int(i.interest_new*100))/100
+            i.interest_new=st.slider('New loan interest (%)',0.0,30.0,round(i.interest_new*100,1),step=0.5)/100
             i.term_years=st.number_input('Loan repayment term (years)',1,30,int(i.term_years))
             i.depreciation_years=st.number_input('Asset useful life (years)',1,40,int(i.depreciation_years))
         with z:
