@@ -47,6 +47,9 @@ if not st.session_state.get('authenticated', False):
 api_key = _configured_secret('OPENAI_API_KEY')
 if api_key:
     os.environ['OPENAI_API_KEY'] = str(api_key)
+gemini_key = _configured_secret('GEMINI_API_KEY')
+if gemini_key:
+    os.environ['GEMINI_API_KEY'] = str(gemini_key)
 st.markdown('''<style>
 [data-testid="stSidebar"] {background:#14283d} [data-testid="stSidebar"] * {color:#f6f8fb!important}
 .block-container {padding-top:1.3rem;max-width:1350px} h1,h2,h3 {color:#15344e!important}
@@ -173,29 +176,49 @@ elif page=='AI Boardroom':
     s=load_scenario_options()
     if s:
         col1,col2=st.columns([2,1])
-        with col1: mode=st.radio('Meeting mode',['Demo / offline','Live OpenAI API'],horizontal=True)
-        with col2: model=st.text_input('API model name','gpt-4.1-mini')
-        if api_key:
-            st.success('OpenAI API key configured. Live meetings use paid API usage and may take time for 15 responses.')
+        with col1:
+            mode=st.radio('Meeting mode',['Demo / offline','Live Gemini API','Live OpenAI API'],horizontal=True)
+        default_model='gemini-2.5-flash-lite' if mode=='Live Gemini API' else 'gpt-4.1-mini'
+        with col2:
+            model=st.text_input('API model name',value=default_model,key='gemini_model' if mode=='Live Gemini API' else 'openai_model')
+        if mode=='Live Gemini API':
+            if gemini_key:
+                st.success('Gemini API key found. You can test the connection before convening the board.')
+            else:
+                st.warning('Add GEMINI_API_KEY in Streamlit → Manage app → Settings → Secrets. Never upload keys to GitHub.')
+            st.caption('Gemini free-tier eligibility and limits vary by model and project. A full three-round meeting makes 15 model calls.')
+            if st.button('Test Gemini connection',disabled=not bool(gemini_key)):
+                try:
+                    from board import gemini_generate
+                    with st.spinner('Checking Gemini with one small request...'):
+                        reply=gemini_generate('Reply as a JSON object with an ok boolean.',{'test':'Reply with {"ok":true}'},model)
+                    if reply.get('ok') is True:
+                        st.success('Gemini responded successfully! You can convene the board.')
+                    else:
+                        st.warning('Gemini responded but did not follow the test format. Try another model.')
+                except Exception as exc:
+                    st.error(f'Gemini test failed: {exc}')
+        elif mode=='Live OpenAI API':
+            if api_key:
+                st.success('OpenAI API key configured. Live meetings use billed API usage.')
+            else:
+                st.warning('Add OPENAI_API_KEY in Streamlit → Manage app → Settings → Secrets.')
+            if st.button('Test OpenAI connection',disabled=not bool(api_key)):
+                try:
+                    from openai import OpenAI
+                    with st.spinner('Checking API access...'):
+                        OpenAI(api_key=str(api_key), timeout=20, max_retries=0).models.retrieve(model.strip())
+                    st.success('OpenAI model is accessible.')
+                except Exception as exc:
+                    message=str(exc)
+                    if '401' in message or 'invalid_api_key' in message:
+                        st.error('OpenAI authentication failed (401). Check OPENAI_API_KEY.')
+                    elif '429' in message or 'insufficient_quota' in message:
+                        st.error('OpenAI quota or rate limit reached (429). Check API billing.')
+                    else:
+                        st.error(f'OpenAI connection failed: {type(exc).__name__}. Verify model and API settings.')
         else:
-            st.warning('Live AI not configured. Add OPENAI_API_KEY in Streamlit → Manage app → Settings → Secrets. Demo/offline voting works without it.')
-        st.caption('Demo/offline produces deterministic simulated opinions. Live OpenAI uses your own API credentials; ChatGPT subscription is separate.')
-        if api_key and st.button('Test OpenAI connection'):
-            try:
-                from openai import OpenAI
-                with st.spinner('Checking API access...'):
-                    OpenAI(api_key=str(api_key), timeout=20, max_retries=0).models.retrieve(model.strip())
-                st.success('Connected successfully: model is accessible. You can select Live OpenAI API.')
-            except Exception as exc:
-                message=str(exc)
-                if '401' in message or 'invalid_api_key' in message:
-                    st.error('OpenAI rejected the API key (401). Replace OPENAI_API_KEY in Streamlit Secrets with an active API key.')
-                elif '429' in message or 'insufficient_quota' in message:
-                    st.error('OpenAI quota or rate-limit issue (429). Check API billing, credits and usage limits.')
-                elif '404' in message or 'model_not_found' in message:
-                    st.error('Model unavailable for this API project. Try an enabled model, such as gpt-4.1-mini.')
-                else:
-                    st.error(f'API connection test failed: {type(exc).__name__}: {message[:350]}')
+            st.info('Offline demo uses simulated director opinions and does not require an API key.')
         if st.button('Convene Board Meeting',type='primary'):
             try:
                 with st.spinner('Running three structured debate rounds...'):
