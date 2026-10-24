@@ -44,9 +44,6 @@ if not st.session_state.get('authenticated', False):
             st.error('Incorrect access password.')
     st.stop()
 
-api_key = _configured_secret('OPENAI_API_KEY')
-if api_key:
-    os.environ['OPENAI_API_KEY'] = str(api_key)
 gemini_key = _configured_secret('GEMINI_API_KEY')
 if gemini_key:
     os.environ['GEMINI_API_KEY'] = str(gemini_key)
@@ -175,50 +172,26 @@ elif page=='AI Boardroom':
     st.title('AI Boardroom · Five Director Debate')
     s=load_scenario_options()
     if s:
-        col1,col2=st.columns([2,1])
-        with col1:
-            mode=st.radio('Meeting mode',['Demo / offline','Live Gemini API','Live OpenAI API'],horizontal=True)
-        default_model='gemini-2.5-flash-lite' if mode=='Live Gemini API' else 'gpt-4.1-mini'
-        with col2:
-            model=st.text_input('API model name',value=default_model,key='gemini_model' if mode=='Live Gemini API' else 'openai_model')
-        if mode=='Live Gemini API':
-            if gemini_key:
-                st.success('Gemini API key found. You can test the connection before convening the board.')
-            else:
-                st.warning('Add GEMINI_API_KEY in Streamlit → Manage app → Settings → Secrets. Never upload keys to GitHub.')
-            st.caption('Gemini free-tier eligibility and limits vary by model and project. A full three-round meeting makes 15 model calls.')
-            if st.button('Test Gemini connection',disabled=not bool(gemini_key)):
-                try:
-                    from board import gemini_generate
-                    with st.spinner('Checking Gemini with one small request...'):
-                        reply=gemini_generate('Reply as a JSON object with an ok boolean.',{'test':'Reply with {"ok":true}'},model)
-                    if reply.get('ok') is True:
-                        st.success('Gemini responded successfully! You can convene the board.')
-                    else:
-                        st.warning('Gemini responded but did not follow the test format. Try another model.')
-                except Exception as exc:
-                    st.error(f'Gemini test failed: {exc}')
-        elif mode=='Live OpenAI API':
-            if api_key:
-                st.success('OpenAI API key configured. Live meetings use billed API usage.')
-            else:
-                st.warning('Add OPENAI_API_KEY in Streamlit → Manage app → Settings → Secrets.')
-            if st.button('Test OpenAI connection',disabled=not bool(api_key)):
-                try:
-                    from openai import OpenAI
-                    with st.spinner('Checking API access...'):
-                        OpenAI(api_key=str(api_key), timeout=20, max_retries=0).models.retrieve(model.strip())
-                    st.success('OpenAI model is accessible.')
-                except Exception as exc:
-                    message=str(exc)
-                    if '401' in message or 'invalid_api_key' in message:
-                        st.error('OpenAI authentication failed (401). Check OPENAI_API_KEY.')
-                    elif '429' in message or 'insufficient_quota' in message:
-                        st.error('OpenAI quota or rate limit reached (429). Check API billing.')
-                    else:
-                        st.error(f'OpenAI connection failed: {type(exc).__name__}. Verify model and API settings.')
+        # Gemini is the only supported mode for newly convened meetings.
+        mode='Live Gemini API'
+        st.caption('AI provider: Google Gemini · Live AI meeting')
+        model=st.text_input('Gemini model name',value='gemini-3.5-flash-lite',key='gemini_only_model')
+        if gemini_key:
+            st.success('Gemini API key found. You can test the connection before convening the board.')
         else:
-            st.info('Offline demo uses simulated director opinions and does not require an API key.')
+            st.warning('Add GEMINI_API_KEY in Streamlit → Manage app → Settings → Secrets. Never upload keys to GitHub.')
+        st.caption('Gemini free-tier eligibility and limits vary by model and project. A full three-round meeting makes 15 model calls.')
+        if st.button('Test Gemini connection',disabled=not bool(gemini_key)):
+            try:
+                from board import gemini_generate
+                with st.spinner('Checking Gemini with one small request...'):
+                    reply=gemini_generate('Reply as a JSON object with an ok boolean.',{'test':'Reply with {"ok":true}'},model)
+                if reply.get('ok') is True:
+                    st.success('Gemini responded successfully! You can convene the board.')
+                else:
+                    st.warning('Gemini responded but did not follow the test format. Try another model.')
+            except Exception as exc:
+                st.error(f'Gemini test failed: {exc}')
         if st.button('Convene Board Meeting',type='primary'):
             try:
                 with st.spinner('Running three structured debate rounds...'):
@@ -288,7 +261,6 @@ elif page=='AI Boardroom':
                     with st.chat_message('assistant'):
                         st.write(exchange['answer'])
                         st.caption('Supporting metrics: '+(', '.join(exchange['supporting_metric_ids']) or 'None cited'))
-                        if exchange['mode']=='Demo / offline': st.caption('Offline illustrative response, not AI-generated.')
 
 elif page=='Shock Engine':
     st.title('Scenario Shock Engine')

@@ -51,8 +51,33 @@ def _live(role,round_no,metrics,prior,model,client):
     response=client.chat.completions.create(model=model,temperature=0.2,response_format={'type':'json_object'},messages=[{'role':'system','content':COMMON+' Your specific mandate: '+ROLES[role]},{'role':'user','content':json.dumps(prompt)}])
     return json.loads(response.choices[0].message.content)
 
-def gemini_generate(system_text, prompt, model='gemini-2.5-flash-lite', api_key=None):
-    """Gemini REST JSON mode; no additional Python package required."""
+def _read_gemini_json(result):
+    """Parse a Gemini JSON response, including occasional fenced JSON output."""
+    candidates=result.get('candidates') or []
+    if not candidates:
+        feedback=result.get('promptFeedback',{})
+        raise ValueError('Gemini returned no candidates (possible content filter): '+str(feedback.get('blockReason','unknown')))
+    candidate=candidates[0]
+    reason=candidate.get('finishReason','UNKNOWN')
+    text=''.join(p.get('text','') for p in (candidate.get('content') or {}).get('parts',[]) if isinstance(p,dict)).strip()
+    if not text:
+        raise ValueError('Gemini returned no text (finish reason: '+reason+').')
+    try:
+        parsed=json.loads(text)
+    except json.JSONDecodeError:
+        cleaned=text
+        if cleaned.startswith('```'):
+            cleaned=cleaned.split('\n',1)[-1].rsplit('```',1)[0].strip()
+        try:
+            parsed=json.loads(cleaned)
+        except json.JSONDecodeError as exc:
+            raise ValueError('Gemini returned invalid JSON (finish reason: '+reason+').') from exc
+    if not isinstance(parsed,dict):
+        raise ValueError('Gemini response must be a JSON object.')
+    return parsed
+
+def gemini_generate(system_text, prompt, model='gemini-3.5-flash-lite', api_key=None):
+    """Gemini REST JSON mode with bounded retry for empty/truncated JSON responses."""
     key = api_key or os.environ.get('GEMINI_API_KEY', '')
     if not key:
         raise ValueError('Add GEMINI_API_KEY to Streamlit Secrets to enable Gemini.')
@@ -60,33 +85,43 @@ def gemini_generate(system_text, prompt, model='gemini-2.5-flash-lite', api_key=
     if not model or not all(c.isascii() and (c.isalnum() or c in '-_.') for c in model):
         raise ValueError('Invalid Gemini model name.')
     url = f'https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent'
-    data = {
-        'systemInstruction': {'parts': [{'text': system_text}]},
-        'contents': [{'role': 'user', 'parts': [{'text': json.dumps(prompt, ensure_ascii=False)}]}],
-        'generationConfig': {'responseMimeType': 'application/json', 'temperature': 0.2, 'maxOutputTokens': 2048},
-    }
-    request = Request(url, data=json.dumps(data).encode('utf-8'), headers={
-        'Content-Type':'application/json', 'x-goog-api-key':key}, method='POST')
-    try:
-        with urlopen(request, timeout=70) as response:
-            result=json.load(response)
-    except HTTPError as exc:
-        # Never include submitted keys or full request URLs in user-facing errors.
-        details=exc.read(1500).decode('utf-8','replace')
-        if exc.code in (401,403): raise ValueError('Gemini authentication or project permission rejected (401/403). Check GEMINI_API_KEY and access.') from None
-        if exc.code==429: raise ValueError('Gemini free-tier quota/rate limit reached (429). Retry later or check AI Studio usage.') from None
-        if exc.code==404: raise ValueError(f'Gemini model {model} not available (404). Choose an available model in AI Studio.') from None
-        raise ValueError(f'Gemini request failed (HTTP {exc.code}). Check model access and Google AI Studio.') from None
-    except URLError as exc:
-        raise ValueError('Cannot reach Gemini API. Check network connectivity.') from None
-    try:
-        text=''.join(part.get('text','') for part in result['candidates'][0]['content']['parts'])
-        return json.loads(text)
-    except (KeyError,IndexError,TypeError,ValueError) as exc:
-        raise ValueError('Gemini returned an empty or non-JSON response. Retry or select a different Gemini model.') from exc
+    last_error=None
+    for attempt in range(2):
+        # Models with internal reasoning can consume response tokens before
+        # displaying JSON. The old 2048 limit caused blank outputs in Round 3.
+        generation={'responseMimeType':'application/json','temperature':0.1,
+                    'maxOutputTokens':8192}
+        user_prompt=prompt if attempt==0 else dict(prompt, **{
+            'retry_instruction':'Return a SHORT JSON object immediately. Every string <= 150 characters, each list <= 2 entries. No markdown. In round 3 supply a valid vote.'
+        }) if isinstance(prompt,dict) else prompt
+        data={'systemInstruction': {'parts':[{'text':system_text}]},
+              'contents':[{'role':'user','parts':[{'text':json.dumps(user_prompt,ensure_ascii=False,default=str)}]}],
+              'generationConfig':generation}
+        request=Request(url,data=json.dumps(data).encode('utf-8'),headers={
+            'Content-Type':'application/json','x-goog-api-key':key},method='POST')
+        try:
+            with urlopen(request,timeout=90) as response:
+                result=json.load(response)
+        except HTTPError as exc:
+            if exc.code in (401,403): raise ValueError('Gemini authentication or project permission rejected (401/403). Check GEMINI_API_KEY and access.') from None
+            if exc.code==429: raise ValueError('Gemini free-tier quota/rate limit reached (429). Retry later or check AI Studio usage.') from None
+            if exc.code==404: raise ValueError(f'Gemini model {model} not available (404). Choose an available model in AI Studio.') from None
+            raise ValueError(f'Gemini request failed (HTTP {exc.code}). Check model access and Google AI Studio.') from None
+        except URLError:
+            raise ValueError('Cannot reach Gemini API. Check network connectivity.') from None
+        try:
+            return _read_gemini_json(result)
+        except ValueError as exc:
+            last_error=str(exc)
+            if 'possible content filter' in last_error:
+                break
+    raise ValueError('Gemini did not return usable JSON after one retry. '+str(last_error)+
+                     ' Try a different available Gemini model.')
 
 def _gemini_live(role, round_no, metrics, prior, model):
-    visible=[view for view in prior if view['round_number'] < round_no]
+    visible=[{'agent_role':v['agent_role'],'round_number':v['round_number'],
+              'position':str(v.get('position',''))[:350], 'vote':v.get('vote')}
+             for v in prior if v['round_number'] < round_no]
     prompt={'role':role,'mandate':ROLES[role],'round':round_no,
             'scenario_metrics_inr_lakh':metrics,'previous_views':visible[-10:],
             'require_final_vote':round_no==3}
@@ -111,29 +146,23 @@ def _validate_response(d,role,round_no,metrics):
     if d.get('challenge_to') not in (None,*ROLES.keys()): d['challenge_to']=None
     return d
 
-def conduct_board(results,mode='Demo / offline',model='gpt-4.1-mini'):
+def conduct_board(results,mode='Live Gemini API',model='gemini-3.5-flash-lite'):
+    if mode != 'Live Gemini API':
+        raise ValueError('Only Live Gemini API is supported for new meetings.')
+    if not os.environ.get('GEMINI_API_KEY'):
+        raise ValueError('Set GEMINI_API_KEY in Streamlit Secrets to enable Gemini.')
     metrics=metric_snapshot(results)
-    if mode=='Live OpenAI API' and not os.environ.get('OPENAI_API_KEY'):raise ValueError('Set OPENAI_API_KEY to enable OpenAI.')
-    if mode=='Live Gemini API' and not os.environ.get('GEMINI_API_KEY'):raise ValueError('Set GEMINI_API_KEY in Streamlit Secrets to enable Gemini.')
-    if mode not in ('Demo / offline','Live OpenAI API','Live Gemini API'):raise ValueError('Unknown meeting mode')
-    client=None
-    if mode=='Live OpenAI API':
-        from openai import OpenAI
-        client=OpenAI(timeout=45,max_retries=1)
     replies=[];errors=[]
     for rnd in (1,2,3):
         # Sequential calls retain the earlier agent positions; no voting before round 3.
         for role in ROLES:
             try:
-                d=(_fallback(role,rnd,metrics,replies) if mode=='Demo / offline' else
-                   _gemini_live(role,rnd,metrics,replies,model) if mode=='Live Gemini API' else
-                   _live(role,rnd,metrics,replies,model,client))
+                d=_gemini_live(role,rnd,metrics,replies,model)
                 d=_validate_response(d,role,rnd,metrics)
                 replies.append(d)
             except Exception as e:
                 msg=str(e)
-                if '401' in msg or 'invalid_api_key' in msg: msg='API authentication failed (401). Update OPENAI_API_KEY in Streamlit Secrets.'
-                elif '429' in msg or 'insufficient_quota' in msg: msg='API quota/rate limit exceeded (429). Check OpenAI API billing and limits.'
+                if '429' in msg or 'RESOURCE_EXHAUSTED' in msg: msg='Gemini API rate limit or quota exceeded (429). Check Google AI Studio usage and limits.'
                 elif 'model_not_found' in msg or '404' in msg: msg=f'Model {model} is unavailable. Choose a model enabled for your API project.'
                 errors.append(f'Round {rnd} {role}: {msg[:450]}')
                 return {'complete':False,'responses':replies,'errors':errors,'mode':mode,'votes':{},'recommendation':'Incomplete: at least one director failed. No vote is fabricated.'}
@@ -151,7 +180,7 @@ def conduct_board(results,mode='Demo / offline',model='gpt-4.1-mini'):
             'limitations':['Synthetic or user-entered scenario assumptions','Simplified tax and working-capital treatment','Agent votes are simulated opinions, not legal board actions']}
 
 
-def chair_question(results, meeting, role, question, mode='Demo / offline', model='gpt-4.1-mini'):
+def chair_question(results, meeting, role, question, mode='Live Gemini API', model='gemini-3.5-flash-lite'):
     """Answer a chairperson's post-meeting question with verified scenario evidence.
 
     Results must be retrieved using the meeting's immutable scenario ID.
@@ -162,16 +191,8 @@ def chair_question(results, meeting, role, question, mode='Demo / offline', mode
     if not question or len(question)>1000: raise ValueError('Question must be 1–1000 characters')
     if not meeting.get('complete'): raise ValueError('Questions require a completed board meeting')
     metrics=metric_snapshot(results)
-    if mode=='Demo / offline':
-        chosen=['proposal.Y1.pretax_profit','proposal.Y1.closing_cash','proposal.Y1.project_dscr']
-        references={key:metrics[key] for key in chosen if key in metrics}
-        answer=(f'{role} (offline illustration): The first-year proposal has '
-                f'pre-tax profit of ₹{metrics.get("proposal.Y1.pretax_profit",0):.2f} lakh '
-                f'and closing cash of ₹{metrics.get("proposal.Y1.closing_cash",0):.2f} lakh. '
-                'The supplied figures alone cannot resolve your question. '
-                'Check sales evidence, financing terms and downside sensitivities before deciding.')
-        return {'role':role,'question':question,'answer':answer,'supporting_metric_ids':list(references),
-                'mode':mode,'limitation':'Prewritten illustrative response; not live AI.'}
+    if mode != 'Live Gemini API':
+        raise ValueError('Only Live Gemini API is supported for new director questions.')
     if mode=='Live Gemini API':
         request={'director':role,'mandate':ROLES[role],'chair_question':question,
                  'verified_financial_metrics':metrics,
@@ -185,25 +206,4 @@ def chair_question(results, meeting, role, question, mode='Demo / offline', mode
             raise ValueError('Invalid Gemini metric references')
         return {'role':role,'question':question,'answer':output['answer'],
                 'supporting_metric_ids':refs,'mode':mode}
-    if not os.environ.get('OPENAI_API_KEY'):
-        raise ValueError('Set OPENAI_API_KEY for live OpenAI follow-up questions')
-    from openai import OpenAI
-    client=OpenAI(timeout=45,max_retries=1)
-    request={'director':role,'mandate':ROLES[role],'chair_question':question,
-             'verified_financial_metrics':metrics,
-             'meeting_final_views':[r for r in meeting['responses'] if r['round_number']==3],
-             'task':'Answer the chairperson concisely, citing only listed metric identifiers. '
-                    'Do not invent business evidence or rerun calculations. '
-                    'Return JSON keys answer (string), supporting_metric_ids (string array).'}
-    response=client.chat.completions.create(
-        model=model,temperature=0.2,response_format={'type':'json_object'},
-        messages=[{'role':'system','content':COMMON+' You are answering a follow-up as the '+role+'. Return a JSON object with answer and supporting_metric_ids only.'},
-                  {'role':'user','content':json.dumps(request)}])
-    output=json.loads(response.choices[0].message.content)
-    if not isinstance(output.get('answer'),str) or not output['answer'].strip():
-        raise ValueError('Invalid director answer')
-    refs=output.get('supporting_metric_ids')
-    if not isinstance(refs,list) or any(not isinstance(x,str) or x not in metrics for x in refs):
-        raise ValueError('Invalid or unknown evidence identifiers')
-    return {'role':role,'question':question,'answer':output['answer'],
-            'supporting_metric_ids':refs,'mode':mode}
+    raise ValueError('Only Live Gemini API is supported.')
