@@ -175,7 +175,27 @@ elif page=='AI Boardroom':
         col1,col2=st.columns([2,1])
         with col1: mode=st.radio('Meeting mode',['Demo / offline','Live OpenAI API'],horizontal=True)
         with col2: model=st.text_input('API model name','gpt-4.1-mini')
-        st.caption('Live mode requires OPENAI_API_KEY in hosting secrets. Demo mode uses clearly labelled deterministic responses.')
+        if api_key:
+            st.success('OpenAI API key configured. Live meetings use paid API usage and may take time for 15 responses.')
+        else:
+            st.warning('Live AI not configured. Add OPENAI_API_KEY in Streamlit → Manage app → Settings → Secrets. Demo/offline voting works without it.')
+        st.caption('Demo/offline produces deterministic simulated opinions. Live OpenAI uses your own API credentials; ChatGPT subscription is separate.')
+        if api_key and st.button('Test OpenAI connection'):
+            try:
+                from openai import OpenAI
+                with st.spinner('Checking API access...'):
+                    OpenAI(api_key=str(api_key), timeout=20, max_retries=0).models.retrieve(model.strip())
+                st.success('Connected successfully: model is accessible. You can select Live OpenAI API.')
+            except Exception as exc:
+                message=str(exc)
+                if '401' in message or 'invalid_api_key' in message:
+                    st.error('OpenAI rejected the API key (401). Replace OPENAI_API_KEY in Streamlit Secrets with an active API key.')
+                elif '429' in message or 'insufficient_quota' in message:
+                    st.error('OpenAI quota or rate-limit issue (429). Check API billing, credits and usage limits.')
+                elif '404' in message or 'model_not_found' in message:
+                    st.error('Model unavailable for this API project. Try an enabled model, such as gpt-4.1-mini.')
+                else:
+                    st.error(f'API connection test failed: {type(exc).__name__}: {message[:350]}')
         if st.button('Convene Board Meeting',type='primary'):
             try:
                 with st.spinner('Running three structured debate rounds...'):
@@ -192,10 +212,27 @@ elif page=='AI Boardroom':
                     for r in result.get('responses',[]):
                         if r['round_number']!=rnd:continue
                         st.markdown(f'**{r["agent_role"]}** '+(f'· **{r["vote"]}**' if r.get('vote') else ''))
-                        st.write(r['position']);st.caption('Evidence: '+', '.join(r['supporting_metric_ids']))
+                        st.write(r['position'])
+                        if r.get('key_arguments'):
+                            st.write('**Reasoning:** ' + '; '.join(r['key_arguments']))
+                        if r.get('conditions') and rnd==3:
+                            st.write('**Conditions:** ' + '; '.join(r['conditions']))
+                        with st.expander('Technical metric references'):
+                            st.caption(', '.join(r.get('supporting_metric_ids',[])))
                         if r.get('challenge_question'):st.info(f"Challenge to {r.get('challenge_to')}: {r['challenge_question']}")
-            st.subheader('Hybrid advisory vote')
-            st.json(result.get('votes',{}),expanded=True)
+            st.subheader('Advisory voting — five directors')
+            st.caption('Each vote is an advisory opinion based on this scenario. Voting is completed in Round 3; it is not interactive shareholder voting.')
+            votes=result.get('votes',{})
+            for director in ROLES:
+                vote=votes.get(director,'PENDING')
+                symbol={'APPROVE':'✅','REJECT':'❌','DEFER':'⏸️'}.get(vote,'⚪')
+                st.markdown(f'**{director}** — {symbol} **{vote}**')
+            counts=result.get('counts',{})
+            if counts:
+                a,b,c=st.columns(3)
+                a.metric('Approve',counts.get('APPROVE',0))
+                b.metric('Reject',counts.get('REJECT',0))
+                c.metric('Defer',counts.get('DEFER',0))
             st.metric('Majority',result.get('majority','INCOMPLETE'))
             st.success(result.get('recommendation')) if result['complete'] else st.warning(result['recommendation'])
             st.caption(result.get('recommendation_rationale',''))
@@ -255,7 +292,10 @@ elif page=='Reports':
     m=get_meeting(mid);s=get_scenario(m['scenario_id']);r=m['meeting']
     st.subheader(s['title']);st.write(r.get('recommendation','Incomplete meeting'))
     st.dataframe(pd.DataFrame(s['results']['proposal']).round(2),use_container_width=True,hide_index=True)
-    st.write('Advisory votes:',r.get('votes',{}))
+    st.subheader('Directors’ advisory votes')
+    vote_rows=[{'Director':name,'Vote':vote} for name,vote in r.get('votes',{}).items()]
+    if vote_rows:st.dataframe(pd.DataFrame(vote_rows),hide_index=True,use_container_width=True)
+    else:st.warning('This meeting has no completed final vote.')
     st.caption('AI-generated decision support; not a statutory board resolution, audit opinion or financing approval.')
     try:
         pdf=pdf_report(s,m)
